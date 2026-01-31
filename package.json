@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "express": "^4.19.2",
-    "node-mymazda": "github:ungineer/node-mymazda"
+    "node-mymazda": "github:ungineer/node-mymazda",
+    "typescript": "^5.0.0"
   }
 }
