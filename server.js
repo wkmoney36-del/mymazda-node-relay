@@ -4,7 +4,7 @@ import * as MazdaPkg from "node-mymazda";
 const app = express();
 app.use(express.json());
 
-// Env vars (set these in Railway → Variables)
+// Env vars (set in Railway → Variables)
 const EMAIL = process.env.MAZDA_EMAIL;
 const PASSWORD = process.env.MAZDA_PASSWORD;
 const REGION = process.env.MAZDA_REGION || "MNAO";
@@ -12,16 +12,32 @@ const API_KEY = process.env.API_KEY;
 const PORT = process.env.PORT || 3000;
 
 /**
- * node-mymazda can export in different shapes depending on build/tooling.
- * This tries the common patterns: default export, named exports, or module itself.
+ * node-mymazda export unwrapping:
+ * Some packages end up as { default: ... } or { default: { default: ... } }
  */
-const MyMazda =
-  MazdaPkg?.default ??
-  MazdaPkg?.MyMazda ??
-  MazdaPkg?.Mazda ??
-  MazdaPkg;
+const mod0 = MazdaPkg;
+const mod1 = MazdaPkg?.default ?? mod0;
+const mod2 = mod1?.default ?? mod1;
 
-/** Simple auth: require x-api-key header to match API_KEY env var */
+/**
+ * Find a constructor function in common locations.
+ * We try:
+ *  - default.default (function or has .MyMazda/.Mazda)
+ *  - default (function or has .MyMazda/.Mazda)
+ *  - module itself (function or has .MyMazda/.Mazda)
+ */
+const MyMazdaCtor =
+  (typeof mod2 === "function" ? mod2 : null) ||
+  mod2?.MyMazda ||
+  mod2?.Mazda ||
+  (typeof mod1 === "function" ? mod1 : null) ||
+  mod1?.MyMazda ||
+  mod1?.Mazda ||
+  (typeof mod0 === "function" ? mod0 : null) ||
+  mod0?.MyMazda ||
+  mod0?.Mazda ||
+  null;
+
 function requireApiKey(req, res) {
   if (!API_KEY) {
     res.status(500).json({ error: "Server missing API_KEY env var" });
@@ -34,21 +50,27 @@ function requireApiKey(req, res) {
   return true;
 }
 
-/** Build Mazda client safely + validate env vars */
 function makeClient() {
   if (!EMAIL || !PASSWORD) {
     throw new Error("Missing MAZDA_EMAIL or MAZDA_PASSWORD env vars");
   }
-  if (typeof MyMazda !== "function") {
-    // This will tell us how the package is exported if it still fails
+
+  if (typeof MyMazdaCtor !== "function") {
+    const keys0 = Object.keys(mod0 || {});
+    const keys1 = mod1 && typeof mod1 === "object" ? Object.keys(mod1) : [];
+    const keys2 = mod2 && typeof mod2 === "object" ? Object.keys(mod2) : [];
     throw new Error(
-      `MyMazda is not a constructor. node-mymazda export keys: ${Object.keys(MazdaPkg).join(", ")}`
+      "MyMazda constructor not found. " +
+        `pkg keys: ${keys0.join(", ")} | ` +
+        `default type: ${typeof mod1} keys: ${keys1.join(", ")} | ` +
+        `default.default type: ${typeof mod2} keys: ${keys2.join(", ")}`
     );
   }
-  return new MyMazda(EMAIL, PASSWORD, REGION);
+
+  return new MyMazdaCtor(EMAIL, PASSWORD, REGION);
 }
 
-// Health check (so the base URL shows something useful)
+// Health endpoint so browser doesn't confuse you
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
@@ -56,10 +78,13 @@ app.get("/health", (req, res) => {
     hasPassword: !!PASSWORD,
     region: REGION,
     hasApiKey: !!API_KEY,
+    exportKeys: Object.keys(MazdaPkg || {}),
+    defaultType: typeof mod1,
+    defaultDefaultType: typeof mod2,
   });
 });
 
-// List vehicles (so you can discover the real VID)
+// List vehicles so you can find the correct VID
 app.get("/vehicles", async (req, res) => {
   try {
     if (!requireApiKey(req, res)) return;
@@ -67,7 +92,6 @@ app.get("/vehicles", async (req, res) => {
     const client = makeClient();
     await client.login();
 
-    // Try common method names depending on library version
     const vehicles =
       (await client.getVehicles?.()) ??
       (await client.vehicles?.()) ??
@@ -77,7 +101,8 @@ app.get("/vehicles", async (req, res) => {
     if (!vehicles) {
       return res.status(500).json({
         error:
-          "Could not find a vehicle-list method on node-mymazda client. Tell me what methods exist and I’ll adjust.",
+          "Could not find a vehicle-list method on the node-mymazda client. " +
+          "If you paste the output of /health (or the list of methods on client), I’ll map it.",
       });
     }
 
@@ -87,7 +112,7 @@ app.get("/vehicles", async (req, res) => {
   }
 });
 
-// Start engine
+// Start engine endpoint
 app.post("/startEngine", async (req, res) => {
   try {
     if (!requireApiKey(req, res)) return;
@@ -101,7 +126,8 @@ app.post("/startEngine", async (req, res) => {
     if (typeof client.startEngine !== "function") {
       return res.status(500).json({
         error:
-          "node-mymazda client has no startEngine() method. We need to map to the correct method name.",
+          "node-mymazda client has no startEngine() method. " +
+          "We may need to call a differently named method (remoteStart, start, etc.).",
       });
     }
 
