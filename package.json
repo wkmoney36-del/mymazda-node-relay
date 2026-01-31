@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "main": "server.js",
- "scripts": {
+"scripts": {
   "start": "node server.js",
   "postinstall": "node -e \"const fs=require('fs'); const p='node_modules/node-mymazda/tsconfig.json'; const j=JSON.parse(fs.readFileSync(p,'utf8')); j.compilerOptions=j.compilerOptions||{}; j.compilerOptions.useUnknownInCatchVariables=false; fs.writeFileSync(p, JSON.stringify(j,null,2));\" && npm --prefix node_modules/node-mymazda install --include=dev && npm --prefix node_modules/node-mymazda run build"
 }
