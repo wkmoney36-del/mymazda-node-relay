@@ -13,18 +13,14 @@ const PORT = process.env.PORT || 3000;
 
 /**
  * node-mymazda export unwrapping:
- * Some packages end up as { default: ... } or { default: { default: ... } }
+ * Often ends up as { default: ... } or { default: { default: ... } }
  */
 const mod0 = MazdaPkg;
 const mod1 = MazdaPkg?.default ?? mod0;
 const mod2 = mod1?.default ?? mod1;
 
 /**
- * Find a constructor function in common locations.
- * We try:
- *  - default.default (function or has .MyMazda/.Mazda)
- *  - default (function or has .MyMazda/.Mazda)
- *  - module itself (function or has .MyMazda/.Mazda)
+ * Find a constructor/function in common locations.
  */
 const MyMazdaCtor =
   (typeof mod2 === "function" ? mod2 : null) ||
@@ -54,7 +50,6 @@ function makeClient() {
   if (!EMAIL || !PASSWORD) {
     throw new Error("Missing MAZDA_EMAIL or MAZDA_PASSWORD env vars");
   }
-
   if (typeof MyMazdaCtor !== "function") {
     const keys0 = Object.keys(mod0 || {});
     const keys1 = mod1 && typeof mod1 === "object" ? Object.keys(mod1) : [];
@@ -66,11 +61,86 @@ function makeClient() {
         `default.default type: ${typeof mod2} keys: ${keys2.join(", ")}`
     );
   }
-
   return new MyMazdaCtor(EMAIL, PASSWORD, REGION);
 }
 
-// Health endpoint so browser doesn't confuse you
+/**
+ * Try to authenticate no matter what method name the client uses.
+ */
+async function ensureAuthed(client) {
+  // Common auth method names across unofficial libs
+  const candidates = [
+    "login",
+    "signIn",
+    "signin",
+    "authenticate",
+    "auth",
+    "init",
+    "initialize",
+    "connect",
+  ];
+
+  for (const name of candidates) {
+    if (typeof client[name] === "function") {
+      await client[name]();
+      return name;
+    }
+  }
+
+  // Some libs auto-auth on construction; if so, no method needed.
+  return null;
+}
+
+/**
+ * Try to list vehicles no matter what method name exists.
+ */
+async function fetchVehicles(client) {
+  const candidates = [
+    "getVehicles",
+    "vehicles",
+    "getVehicleList",
+    "listVehicles",
+    "fetchVehicles",
+    "getMyVehicles",
+  ];
+
+  for (const name of candidates) {
+    if (typeof client[name] === "function") {
+      const v = await client[name]();
+      return { method: name, vehicles: v };
+    }
+  }
+
+  // Sometimes vehicles live as a property after auth
+  if (Array.isArray(client.vehicles)) return { method: "vehicles(property)", vehicles: client.vehicles };
+
+  return { method: null, vehicles: null };
+}
+
+/**
+ * Try to start engine no matter what method name exists.
+ */
+async function startEngineAny(client, vid) {
+  const candidates = [
+    "startEngine",
+    "remoteStart",
+    "start",
+    "engineStart",
+    "startRemote",
+    "remoteEngineStart",
+  ];
+
+  for (const name of candidates) {
+    if (typeof client[name] === "function") {
+      const out = await client[name](vid);
+      return { method: name, result: out ?? null };
+    }
+  }
+
+  return { method: null, result: null };
+}
+
+// Health endpoint (no auth required)
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
@@ -84,35 +154,52 @@ app.get("/health", (req, res) => {
   });
 });
 
-// List vehicles so you can find the correct VID
-app.get("/vehicles", async (req, res) => {
+// Debug endpoint (auth required) — shows what methods exist on the client
+app.get("/debug", (req, res) => {
   try {
     if (!requireApiKey(req, res)) return;
 
     const client = makeClient();
-    await client.login();
+    const proto = Object.getPrototypeOf(client);
 
-    const vehicles =
-      (await client.getVehicles?.()) ??
-      (await client.vehicles?.()) ??
-      (await client.getVehicleList?.()) ??
-      null;
-
-    if (!vehicles) {
-      return res.status(500).json({
-        error:
-          "Could not find a vehicle-list method on the node-mymazda client. " +
-          "If you paste the output of /health (or the list of methods on client), I’ll map it.",
-      });
-    }
-
-    res.json({ vehicles });
+    res.json({
+      ctorName: client?.constructor?.name,
+      ownKeys: Object.keys(client),
+      protoKeys: Object.getOwnPropertyNames(proto).filter(
+        (k) => typeof proto[k] === "function"
+      ),
+    });
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
 });
 
-// Start engine endpoint
+// Vehicles (auth required)
+app.get("/vehicles", async (req, res) => {
+  try {
+    if (!requireApiKey(req, res)) return;
+
+    const client = makeClient();
+    const authedWith = await ensureAuthed(client);
+    const { method: vehiclesWith, vehicles } = await fetchVehicles(client);
+
+    if (!vehicles) {
+      return res.status(500).json({
+        error:
+          "Could not find a vehicle-list method on the node-mymazda client.",
+        authedWith,
+        vehiclesWith,
+        hint: "Call /debug and paste the protoKeys here if this persists.",
+      });
+    }
+
+    res.json({ authedWith, vehiclesWith, vehicles });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Start engine (auth required)
 app.post("/startEngine", async (req, res) => {
   try {
     if (!requireApiKey(req, res)) return;
@@ -121,18 +208,19 @@ app.post("/startEngine", async (req, res) => {
     if (!vid) return res.status(400).json({ error: "Missing vid" });
 
     const client = makeClient();
-    await client.login();
+    const authedWith = await ensureAuthed(client);
+    const { method: startWith, result } = await startEngineAny(client, vid);
 
-    if (typeof client.startEngine !== "function") {
+    if (!startWith) {
       return res.status(500).json({
         error:
-          "node-mymazda client has no startEngine() method. " +
-          "We may need to call a differently named method (remoteStart, start, etc.).",
+          "Could not find an engine-start method on the node-mymazda client.",
+        authedWith,
+        hint: "Call /debug and paste the protoKeys here.",
       });
     }
 
-    await client.startEngine(vid);
-    res.json({ ok: true });
+    res.json({ ok: true, authedWith, startWith, result });
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
