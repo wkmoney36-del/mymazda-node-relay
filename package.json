@@ -8,6 +8,6 @@
   },
   "dependencies": {
     "express": "^4.19.2",
-    "node-mymazda": "github:ungineer/node-mymazda"
+    "node-mymazda": "github:wkmoney36-del/node-mymazda-patched#main"
   }
 }
